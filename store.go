@@ -16,6 +16,11 @@ import (
 	_ "github.com/containers/storage/drivers/register"
 
 	"github.com/BurntSushi/toml"
+	"github.com/hashicorp/go-multierror"
+	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/selinux/go-selinux/label"
+	"github.com/pkg/errors"
+
 	drivers "github.com/containers/storage/drivers"
 	"github.com/containers/storage/pkg/archive"
 	cfg "github.com/containers/storage/pkg/config"
@@ -26,10 +31,6 @@ import (
 	"github.com/containers/storage/pkg/parsers"
 	"github.com/containers/storage/pkg/stringid"
 	"github.com/containers/storage/pkg/stringutils"
-	"github.com/hashicorp/go-multierror"
-	digest "github.com/opencontainers/go-digest"
-	"github.com/opencontainers/selinux/go-selinux/label"
-	"github.com/pkg/errors"
 )
 
 var (
@@ -64,6 +65,29 @@ type RWFileBasedStore interface {
 type FileBasedStore interface {
 	ROFileBasedStore
 	RWFileBasedStore
+}
+
+// roFileBasedStore wraps up the methods of the various types of file-based
+// data stores that we implement which are needed for both read-only and
+// read-write files.
+type roFileBasedStore interface {
+	Locker
+
+	// Load reloads the contents of the store from disk.  It should be called
+	// with the lock held.
+	Load() error
+
+	// ReloadIfChanged reloads the contents of the store from disk if it is changed.
+	ReloadIfChanged() error
+}
+
+// rwFileBasedStore wraps up the methods of various types of file-based data
+// stores that we implement using read-write files.
+type rwFileBasedStore interface {
+	// Save saves the contents of the store to disk.  It should be called with
+	// the lock held, and Touch() should be called afterward before releasing the
+	// lock.
+	Save() error
 }
 
 // ROMetadataStore wraps a method for reading metadata associated with an ID.

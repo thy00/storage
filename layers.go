@@ -135,8 +135,46 @@ type DiffOptions struct {
 // name, and keeping track of parent-child relationships, along with a list of
 // all known layers.
 type ROLayerStore interface {
-	ROFileBasedStore
 	ROMetadataStore
+
+	// Acquire a writer lock.
+	// The default unix implementation panics if:
+	// - opening the lockfile failed
+	// - tried to lock a read-only lock-file
+	Lock()
+
+	// Unlock the lock.
+	// The default unix implementation panics if:
+	// - unlocking an unlocked lock
+	// - if the lock counter is corrupted
+	Unlock()
+
+	// Acquire a reader lock.
+	RLock()
+
+	// Touch records, for others sharing the lock, that the caller was the
+	// last writer.  It should only be called with the lock held.
+	Touch() error
+
+	// Modified() checks if the most recent writer was a party other than the
+	// last recorded writer.  It should only be called with the lock held.
+	Modified() (bool, error)
+
+	// TouchedSince() checks if the most recent writer modified the file (likely using Touch()) after the specified time.
+	TouchedSince(when time.Time) bool
+
+	// IsReadWrite() checks if the lock file is read-write
+	IsReadWrite() bool
+
+	// Locked() checks if lock is locked for writing by a thread in this process
+	Locked() bool
+
+	// Load reloads the contents of the store from disk.  It should be called
+	// with the lock held.
+	Load() error
+
+	// ReloadIfChanged reloads the contents of the store from disk if it is changed.
+	ReloadIfChanged() error
 
 	// Exists checks if a layer with the specified name or ID is known.
 	Exists(id string) bool
@@ -191,9 +229,13 @@ type ROLayerStore interface {
 // all known layers.
 type LayerStore interface {
 	ROLayerStore
-	RWFileBasedStore
 	RWMetadataStore
 	FlaggableStore
+
+	// Save saves the contents of the store to disk.  It should be called with
+	// the lock held, and Touch() should be called afterward before releasing the
+	// lock.
+	Save() error
 
 	// Create creates a new layer, optionally giving it a specified ID rather than
 	// a randomly-generated one, either inheriting data from another specified
