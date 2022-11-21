@@ -159,13 +159,6 @@ type ROLayerStore interface {
 	// TouchedSince() checks if the most recent writer modified the file (likely using Touch()) after the specified time.
 	TouchedSince(when time.Time) bool
 
-	// Load reloads the contents of the store from disk.  It should be called
-	// with the lock held.
-	Load() error
-
-	// ReloadIfChanged reloads the contents of the store from disk if it is changed.
-	ReloadIfChanged() error
-
 	// Exists checks if a layer with the specified name or ID is known.
 	Exists(id string) bool
 
@@ -271,10 +264,6 @@ type LayerStore interface {
 	// ApplyDiff reads a tarstream which was created by a previous call to Diff and
 	// applies its changes to a specified layer.
 	ApplyDiff(to string, diff io.Reader) (int64, error)
-
-	// LoadLocked wraps Load in a locked state. This means it loads the store
-	// and cleans-up invalid layers if needed.
-	LoadLocked() error
 }
 
 type layerStore struct {
@@ -334,7 +323,7 @@ func (r *layerStore) startWritingWithReload(canReload bool) error {
 	}()
 
 	if canReload {
-		if err := r.ReloadIfChanged(); err != nil {
+		if err := r.reloadIfChanged(true); err != nil {
 			return err
 		}
 	}
@@ -369,7 +358,7 @@ func (r *layerStore) startReadingWithReload(canReload bool) error {
 	}()
 
 	if canReload {
-		if err := r.ReloadIfChanged(); err != nil {
+		if err := r.reloadIfChanged(true); err != nil {
 			return err
 		}
 	}
@@ -405,7 +394,11 @@ func (r *layerStore) layerspath() string {
 	return filepath.Join(r.layerdir, "layers.json")
 }
 
-func (r *layerStore) Load() error {
+// load reloads the contents of the store from disk.
+//
+// The caller must hold r.lockfile for reading _or_ writing; lockedForWriting is true
+// if it is held for writing.
+func (r *layerStore) load(lockedForWriting bool) error {
 	shouldSave := false
 	rpath := r.layerspath()
 	data, err := ioutil.ReadFile(rpath)
@@ -446,7 +439,8 @@ func (r *layerStore) Load() error {
 		}
 		err = nil
 	}
-	if shouldSave && (!r.lockfile.IsReadWrite() || !r.lockfile.Locked()) {
+	if shouldSave && (!r.lockfile.IsReadWrite() || !lockedForWriting) {
+		// Eventually, the callers should be modified to retry with a write lock if IsReadWrite && !lockedForWriting, instead.
 		return ErrDuplicateLayerNames
 	}
 	r.layers = layers
@@ -467,7 +461,7 @@ func (r *layerStore) Load() error {
 		// Last step: as we’re writable, try to remove anything that a previous
 		// user of this storage area marked for deletion but didn't manage to
 		// actually delete.
-		if r.lockfile.Locked() {
+		if lockedForWriting {
 			for _, layer := range r.layers {
 				if layer.Flags == nil {
 					layer.Flags = make(map[string]interface{})
@@ -489,12 +483,6 @@ func (r *layerStore) Load() error {
 	}
 
 	return err
-}
-
-func (r *layerStore) LoadLocked() error {
-	r.lockfile.Lock()
-	defer r.lockfile.Unlock()
-	return r.Load()
 }
 
 func (r *layerStore) loadMounts() error {
@@ -534,6 +522,8 @@ func (r *layerStore) loadMounts() error {
 	return err
 }
 
+// Save saves the contents of the store to disk.  It should be called with
+// the lock held, locked for writing.
 func (r *layerStore) Save() error {
 	r.mountsLockfile.Lock()
 	defer r.mountsLockfile.Unlock()
@@ -548,9 +538,7 @@ func (r *layerStore) saveLayers() error {
 	if !r.lockfile.IsReadWrite() {
 		return errors.Wrapf(ErrStoreIsReadOnly, "not allowed to modify the layer store at %q", r.layerspath())
 	}
-	if !r.lockfile.Locked() {
-		return errors.New("layer store is not locked for writing")
-	}
+	r.lockfile.AssertLockedForWriting()
 	rpath := r.layerspath()
 	if err := os.MkdirAll(filepath.Dir(rpath), 0700); err != nil {
 		return err
@@ -567,9 +555,7 @@ func (r *layerStore) saveMounts() error {
 	if !r.lockfile.IsReadWrite() {
 		return errors.Wrapf(ErrStoreIsReadOnly, "not allowed to modify the layer store at %q", r.layerspath())
 	}
-	if !r.mountsLockfile.Locked() {
-		return errors.New("layer store mount information is not locked for writing")
-	}
+	r.mountsLockfile.AssertLockedForWriting()
 	mpath := r.mountspath()
 	if err := os.MkdirAll(filepath.Dir(mpath), 0700); err != nil {
 		return err
@@ -625,7 +611,7 @@ func (s *store) newLayerStore(rundir string, layerdir string, driver drivers.Dri
 		return nil, err
 	}
 	defer rlstore.stopWriting()
-	if err := rlstore.Load(); err != nil {
+	if err := rlstore.load(true); err != nil {
 		return nil, err
 	}
 	return &rlstore, nil
@@ -650,7 +636,7 @@ func newROLayerStore(rundir string, layerdir string, driver drivers.Driver) (ROL
 		return nil, err
 	}
 	defer rlstore.stopWriting()
-	if err := rlstore.Load(); err != nil {
+	if err := rlstore.load(true); err != nil {
 		return nil, err
 	}
 	return &rlstore, nil
@@ -1536,13 +1522,17 @@ func (r *layerStore) TouchedSince(when time.Time) bool {
 	return r.lockfile.TouchedSince(when)
 }
 
-func (r *layerStore) ReloadIfChanged() error {
+// reloadIfChanged reloads the contents of the store from disk if it is changed.
+//
+// The caller must hold r.lockfile for reading _or_ writing; lockedForWriting is true
+// if it is held for writing.
+func (r *layerStore) reloadIfChanged(lockedForWriting bool) error {
 	r.loadMut.Lock()
 	defer r.loadMut.Unlock()
 
 	modified, err := r.Modified()
 	if err == nil && modified {
-		return r.Load()
+		return r.load(lockedForWriting)
 	}
-	return nil
+	return err
 }
