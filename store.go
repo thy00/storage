@@ -959,11 +959,12 @@ func (s *store) PutLayer(id, parent string, names []string, mountLabel string, w
 	if err != nil {
 		return nil, -1, err
 	}
-	rlstore.Lock()
-	defer rlstore.Unlock()
-	if err := rlstore.ReloadIfChanged(); err != nil {
+
+	if err := rlstore.startWriting(); err != nil {
 		return nil, -1, err
 	}
+	defer rlstore.stopWriting()
+
 	rcstore.Lock()
 	defer rcstore.Unlock()
 	if err := rcstore.ReloadIfChanged(); err != nil {
@@ -1065,18 +1066,15 @@ func (s *store) CreateImage(id string, names []string, layer, metadata string, o
 		for _, s := range append([]ROLayerStore{lstore}, lstores...) {
 			store := s
 			if store == lstore {
-				store.Lock()
-				defer store.Unlock()
+				if err := store.startWriting(); err != nil {
+					return nil, err
+				}
+				defer store.stopWriting()
 			} else {
 				if err := store.startReading(); err != nil {
 					return nil, err
 				}
 				defer store.stopReading()
-			}
-
-			err := store.ReloadIfChanged()
-			if err != nil {
-				return nil, err
 			}
 			ilayer, err = store.Get(layer)
 			if err == nil {
@@ -1268,11 +1266,12 @@ func (s *store) CreateContainer(id string, names []string, image, layer, metadat
 		if err != nil {
 			return nil, err
 		}
-		rlstore.Lock()
-		defer rlstore.Unlock()
-		if err := rlstore.ReloadIfChanged(); err != nil {
+
+		if err := rlstore.startWriting(); err != nil {
 			return nil, err
 		}
+		defer rlstore.stopWriting()
+
 		for _, s := range append([]ROImageStore{istore}, istores...) {
 			store := s
 			if store == istore {
@@ -1325,11 +1324,11 @@ func (s *store) CreateContainer(id string, names []string, image, layer, metadat
 			}
 		}
 	} else {
-		rlstore.Lock()
-		defer rlstore.Unlock()
-		if err := rlstore.ReloadIfChanged(); err != nil {
+		if err := rlstore.startWriting(); err != nil {
 			return nil, err
 		}
+		defer rlstore.stopWriting()
+
 		if !options.HostUIDMapping && len(options.UIDMap) == 0 {
 			uidMap = s.uidMap
 		}
@@ -1417,11 +1416,11 @@ func (s *store) SetMetadata(id, metadata string) error {
 		return err
 	}
 
-	rlstore.Lock()
-	defer rlstore.Unlock()
-	if err := rlstore.ReloadIfChanged(); err != nil {
+	if err := rlstore.startWriting(); err != nil {
 		return err
 	}
+	defer rlstore.stopWriting()
+
 	ristore.Lock()
 	defer ristore.Unlock()
 	if err := ristore.ReloadIfChanged(); err != nil {
@@ -1962,11 +1961,10 @@ func (s *store) SetNames(id string, names []string) error {
 	if err != nil {
 		return err
 	}
-	rlstore.Lock()
-	defer rlstore.Unlock()
-	if err := rlstore.ReloadIfChanged(); err != nil {
+	if err := rlstore.startWriting(); err != nil {
 		return err
 	}
+	defer rlstore.stopWriting()
 	if rlstore.Exists(id) {
 		return rlstore.SetNames(id, deduped)
 	}
@@ -2125,12 +2123,10 @@ func (s *store) DeleteLayer(id string) error {
 	if err != nil {
 		return err
 	}
-
-	rlstore.Lock()
-	defer rlstore.Unlock()
-	if err := rlstore.ReloadIfChanged(); err != nil {
+	if err := rlstore.startWriting(); err != nil {
 		return err
 	}
+	defer rlstore.stopWriting()
 	ristore.Lock()
 	defer ristore.Unlock()
 	if err := ristore.ReloadIfChanged(); err != nil {
@@ -2191,12 +2187,10 @@ func (s *store) DeleteImage(id string, commit bool) (layers []string, err error)
 	if err != nil {
 		return nil, err
 	}
-
-	rlstore.Lock()
-	defer rlstore.Unlock()
-	if err := rlstore.ReloadIfChanged(); err != nil {
+	if err := rlstore.startWriting(); err != nil {
 		return nil, err
 	}
+	defer rlstore.stopWriting()
 	ristore.Lock()
 	defer ristore.Unlock()
 	if err := ristore.ReloadIfChanged(); err != nil {
@@ -2323,12 +2317,10 @@ func (s *store) DeleteContainer(id string) error {
 	if err != nil {
 		return err
 	}
-
-	rlstore.Lock()
-	defer rlstore.Unlock()
-	if err := rlstore.ReloadIfChanged(); err != nil {
+	if err := rlstore.startWriting(); err != nil {
 		return err
 	}
+	defer rlstore.stopWriting()
 	ristore.Lock()
 	defer ristore.Unlock()
 	if err := ristore.ReloadIfChanged(); err != nil {
@@ -2408,12 +2400,10 @@ func (s *store) Delete(id string) error {
 	if err != nil {
 		return err
 	}
-
-	rlstore.Lock()
-	defer rlstore.Unlock()
-	if err := rlstore.ReloadIfChanged(); err != nil {
+	if err := rlstore.startWriting(); err != nil {
 		return err
 	}
+	defer rlstore.stopWriting()
 	ristore.Lock()
 	defer ristore.Unlock()
 	if err := ristore.ReloadIfChanged(); err != nil {
@@ -2471,11 +2461,10 @@ func (s *store) Wipe() error {
 		return err
 	}
 
-	rlstore.Lock()
-	defer rlstore.Unlock()
-	if err := rlstore.ReloadIfChanged(); err != nil {
+	if err := rlstore.startWriting(); err != nil {
 		return err
 	}
+	defer rlstore.stopWriting()
 	ristore.Lock()
 	defer ristore.Unlock()
 	if err := ristore.ReloadIfChanged(); err != nil {
@@ -2527,12 +2516,10 @@ func (s *store) Mount(id, mountLabel string) (string, error) {
 	s.graphLock.Lock()
 	defer s.graphLock.Unlock()
 
-	rlstore.Lock()
-	defer rlstore.Unlock()
-	if err := rlstore.ReloadIfChanged(); err != nil {
+	if err := rlstore.startWriting(); err != nil {
 		return "", err
 	}
-
+	defer rlstore.stopWriting()
 	/* We need to make sure the home mount is present when the Mount is done.  */
 	if s.graphLock.TouchedSince(s.lastLoaded) {
 		s.graphDriver = nil
@@ -2580,11 +2567,11 @@ func (s *store) Unmount(id string, force bool) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	rlstore.Lock()
-	defer rlstore.Unlock()
-	if err := rlstore.ReloadIfChanged(); err != nil {
+	if err := rlstore.startWriting(); err != nil {
 		return false, err
 	}
+	defer rlstore.stopWriting()
+
 	if rlstore.Exists(id) {
 		return rlstore.Unmount(id, force)
 	}
@@ -2676,11 +2663,11 @@ func (s *store) ApplyDiff(to string, diff io.Reader) (int64, error) {
 	if err != nil {
 		return -1, err
 	}
-	rlstore.Lock()
-	defer rlstore.Unlock()
-	if err := rlstore.ReloadIfChanged(); err != nil {
+	if err := rlstore.startWriting(); err != nil {
 		return -1, err
 	}
+	defer rlstore.stopWriting()
+
 	if rlstore.Exists(to) {
 		return rlstore.ApplyDiff(to, diff)
 	}
@@ -3148,11 +3135,10 @@ func (s *store) Shutdown(force bool) ([]string, error) {
 	s.graphLock.Lock()
 	defer s.graphLock.Unlock()
 
-	rlstore.Lock()
-	defer rlstore.Unlock()
-	if err := rlstore.ReloadIfChanged(); err != nil {
+	if err := rlstore.startWriting(); err != nil {
 		return nil, err
 	}
+	defer rlstore.stopWriting()
 
 	layers, err := rlstore.Layers()
 	if err != nil {
