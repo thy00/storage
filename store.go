@@ -2658,15 +2658,15 @@ func (s *store) Diff(from, to string, options *DiffOptions) (io.ReadCloser, erro
 			if rc != nil && err == nil {
 				wrapped := ioutils.NewReadCloserWrapper(rc, func() error {
 					err := rc.Close()
-					store.Unlock()
+					store.stopReading()
 					return err
 				})
 				return wrapped, nil
 			}
-			store.Unlock()
+			store.stopReading()
 			return rc, err
 		}
-		store.Unlock()
+		store.stopReading()
 	}
 	return nil, ErrLayerUnknown
 }
