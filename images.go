@@ -9,11 +9,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opencontainers/go-digest"
+	"github.com/pkg/errors"
+
 	"github.com/containers/storage/pkg/ioutils"
 	"github.com/containers/storage/pkg/stringid"
 	"github.com/containers/storage/pkg/truncindex"
-	digest "github.com/opencontainers/go-digest"
-	"github.com/pkg/errors"
 )
 
 const (
@@ -96,9 +97,47 @@ type Image struct {
 
 // ROImageStore provides bookkeeping for information about Images.
 type ROImageStore interface {
-	ROFileBasedStore
 	ROMetadataStore
 	ROBigDataStore
+
+	// Acquire a writer lock.
+	// The default unix implementation panics if:
+	// - opening the lockfile failed
+	// - tried to lock a read-only lock-file
+	Lock()
+
+	// Unlock the lock.
+	// The default unix implementation panics if:
+	// - unlocking an unlocked lock
+	// - if the lock counter is corrupted
+	Unlock()
+
+	// Acquire a reader lock.
+	RLock()
+
+	// Touch records, for others sharing the lock, that the caller was the
+	// last writer.  It should only be called with the lock held.
+	Touch() error
+
+	// Modified() checks if the most recent writer was a party other than the
+	// last recorded writer.  It should only be called with the lock held.
+	Modified() (bool, error)
+
+	// TouchedSince() checks if the most recent writer modified the file (likely using Touch()) after the specified time.
+	TouchedSince(when time.Time) bool
+
+	// IsReadWrite() checks if the lock file is read-write
+	IsReadWrite() bool
+
+	// Locked() checks if lock is locked for writing by a thread in this process
+	Locked() bool
+
+	// Load reloads the contents of the store from disk.  It should be called
+	// with the lock held.
+	Load() error
+
+	// ReloadIfChanged reloads the contents of the store from disk if it is changed.
+	ReloadIfChanged() error
 
 	// Exists checks if there is an image with the given ID or name.
 	Exists(id string) bool
@@ -123,10 +162,14 @@ type ROImageStore interface {
 // ImageStore provides bookkeeping for information about Images.
 type ImageStore interface {
 	ROImageStore
-	RWFileBasedStore
 	RWMetadataStore
 	RWImageBigDataStore
 	FlaggableStore
+
+	// Save saves the contents of the store to disk.  It should be called with
+	// the lock held, and Touch() should be called afterward before releasing the
+	// lock.
+	Save() error
 
 	// Create creates an image that has a specified ID (or a random one) and
 	// optional names, using the specified layer as its topmost (hopefully
