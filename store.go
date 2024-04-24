@@ -63,13 +63,6 @@ type RWFileBasedStore interface {
 	Save() error
 }
 
-// FileBasedStore wraps up the common methods of various types of file-based
-// data stores that we implement.
-type FileBasedStore interface {
-	ROFileBasedStore
-	RWFileBasedStore
-}
-
 // roFileBasedStore wraps up the methods of the various types of file-based
 // data stores that we implement which are needed for both read-only and
 // read-write files.
