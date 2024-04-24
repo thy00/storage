@@ -15,6 +15,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/klauspost/pgzip"
+	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/selinux/go-selinux/label"
+	"github.com/pkg/errors"
+	"github.com/vbatts/tar-split/archive/tar"
+	"github.com/vbatts/tar-split/tar/asm"
+	"github.com/vbatts/tar-split/tar/storage"
+
 	drivers "github.com/containers/storage/drivers"
 	"github.com/containers/storage/pkg/archive"
 	"github.com/containers/storage/pkg/idtools"
@@ -24,18 +32,15 @@ import (
 	"github.com/containers/storage/pkg/system"
 	"github.com/containers/storage/pkg/tarlog"
 	"github.com/containers/storage/pkg/truncindex"
-	"github.com/klauspost/pgzip"
-	digest "github.com/opencontainers/go-digest"
-	"github.com/opencontainers/selinux/go-selinux/label"
-	"github.com/pkg/errors"
-	"github.com/vbatts/tar-split/archive/tar"
-	"github.com/vbatts/tar-split/tar/asm"
-	"github.com/vbatts/tar-split/tar/storage"
 )
 
 const (
 	tarSplitSuffix = ".tar-split.gz"
 	incompleteFlag = "incomplete"
+	// maxLayerStoreCleanupIterations is the number of times we try to clean up inconsistent layer store state
+	// in readers (which, for implementation reasons, gives other writers the opportunity to create more inconsistent state)
+	// until we just give up.
+	maxLayerStoreCleanupIterations = 3
 )
 
 // A Layer is a record of a copy-on-write layer that's stored by the lower
@@ -237,7 +242,7 @@ type LayerStore interface {
 
 	// SetNames replaces the list of names associated with a layer with the
 	// supplied values.
-	SetNames(id string, names []string) error
+	SetNames(id string, namess []string) error
 
 	// Delete deletes a layer with the specified name or ID.
 	Delete(id string) error
@@ -323,7 +328,7 @@ func (r *layerStore) startWritingWithReload(canReload bool) error {
 	}()
 
 	if canReload {
-		if err := r.reloadIfChanged(true); err != nil {
+		if _, err := r.reloadIfChanged(true); err != nil {
 			return err
 		}
 	}
@@ -350,20 +355,46 @@ func (r *layerStore) stopWriting() {
 // should use startReading() instead.
 func (r *layerStore) startReadingWithReload(canReload bool) error {
 	r.lockfile.RLock()
-	succeeded := false
+	unlockFn := r.lockfile.Unlock // A function to call to clean up, or nil
 	defer func() {
-		if !succeeded {
-			r.lockfile.Unlock()
+		if unlockFn != nil {
+			unlockFn()
 		}
 	}()
 
 	if canReload {
-		if err := r.reloadIfChanged(true); err != nil {
-			return err
+		cleanupsDone := 0
+		for {
+			tryLockedForWriting, err := r.reloadIfChanged(false)
+			if err == nil {
+				break
+			}
+			if !tryLockedForWriting {
+				return err
+			}
+			if cleanupsDone >= maxLayerStoreCleanupIterations {
+				return fmt.Errorf("(even after %d cleanup attempts:) %w", cleanupsDone, err)
+			}
+			unlockFn()
+			unlockFn = nil
+
+			r.lockfile.Lock()
+			unlockFn = r.lockfile.Unlock
+			if _, err := r.load(true); err != nil {
+				return err
+			}
+			unlockFn()
+			unlockFn = nil
+
+			r.lockfile.RLock()
+			unlockFn = r.lockfile.Unlock
+			// We need to check for a reload reload again because the on-disk state could have been modified
+			// after we released the lock.
+			cleanupsDone++
 		}
 	}
 
-	succeeded = true
+	unlockFn = nil
 	return nil
 }
 
@@ -398,12 +429,15 @@ func (r *layerStore) layerspath() string {
 //
 // The caller must hold r.lockfile for reading _or_ writing; lockedForWriting is true
 // if it is held for writing.
-func (r *layerStore) load(lockedForWriting bool) error {
+//
+// If !lockedForWriting and this function fails, the return value indicates whether
+// retrying with lockedForWriting could succeed.
+func (r *layerStore) load(lockedForWriting bool) (bool, error) {
 	shouldSave := false
 	rpath := r.layerspath()
 	data, err := ioutil.ReadFile(rpath)
 	if err != nil && !os.IsNotExist(err) {
-		return err
+		return false, err
 	}
 	layers := []*Layer{}
 	idlist := []string{}
@@ -440,8 +474,12 @@ func (r *layerStore) load(lockedForWriting bool) error {
 		err = nil
 	}
 	if shouldSave && (!r.lockfile.IsReadWrite() || !lockedForWriting) {
-		// Eventually, the callers should be modified to retry with a write lock if IsReadWrite && !lockedForWriting, instead.
-		return ErrDuplicateLayerNames
+		if !r.lockfile.IsReadWrite() {
+			return false, ErrDuplicateLayerNames
+		}
+		if !lockedForWriting {
+			return true, ErrDuplicateLayerNames
+		}
 	}
 	r.layers = layers
 	r.idindex = truncindex.NewTruncIndex(idlist)
@@ -455,7 +493,7 @@ func (r *layerStore) load(lockedForWriting bool) error {
 		r.mountsLockfile.RLock()
 		defer r.mountsLockfile.Unlock()
 		if err = r.loadMounts(); err != nil {
-			return err
+			return false, err
 		}
 
 		// Last step: as we’re writable, try to remove anything that a previous
@@ -478,11 +516,11 @@ func (r *layerStore) load(lockedForWriting bool) error {
 			}
 		}
 		if shouldSave {
-			return r.saveLayers()
+			return false, err
 		}
 	}
 
-	return err
+	return false, nil
 }
 
 func (r *layerStore) loadMounts() error {
@@ -611,7 +649,7 @@ func (s *store) newLayerStore(rundir string, layerdir string, driver drivers.Dri
 		return nil, err
 	}
 	defer rlstore.stopWriting()
-	if err := rlstore.load(true); err != nil {
+	if _, err := rlstore.load(true); err != nil {
 		return nil, err
 	}
 	return &rlstore, nil
@@ -636,7 +674,7 @@ func newROLayerStore(rundir string, layerdir string, driver drivers.Driver) (ROL
 		return nil, err
 	}
 	defer rlstore.stopWriting()
-	if err := rlstore.load(true); err != nil {
+	if _, err := rlstore.load(false); err != nil {
 		return nil, err
 	}
 	return &rlstore, nil
@@ -1526,13 +1564,21 @@ func (r *layerStore) TouchedSince(when time.Time) bool {
 //
 // The caller must hold r.lockfile for reading _or_ writing; lockedForWriting is true
 // if it is held for writing.
-func (r *layerStore) reloadIfChanged(lockedForWriting bool) error {
+//
+// If !lockedForWriting and this function fails, the return value indicates whether
+// retrying with lockedForWriting could succeed. In that case the caller MUST
+// call load(), not reloadIfChanged() (because the “if changed” state will not
+// be detected again).
+func (r *layerStore) reloadIfChanged(lockedForWriting bool) (bool, error) {
 	r.loadMut.Lock()
 	defer r.loadMut.Unlock()
 
 	modified, err := r.Modified()
-	if err == nil && modified {
+	if err != nil {
+		return false, err
+	}
+	if modified {
 		return r.load(lockedForWriting)
 	}
-	return err
+	return false, nil
 }
