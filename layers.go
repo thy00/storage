@@ -19,6 +19,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/selinux/go-selinux/label"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	"github.com/vbatts/tar-split/archive/tar"
 	"github.com/vbatts/tar-split/tar/asm"
 	"github.com/vbatts/tar-split/tar/storage"
@@ -506,6 +507,7 @@ func (r *layerStore) load(lockedForWriting bool) (bool, error) {
 				}
 				if cleanup, ok := layer.Flags[incompleteFlag]; ok {
 					if b, ok := cleanup.(bool); ok && b {
+						logrus.Warnf("Found incomplete layer %#v, deleting it", layer.ID)
 						err = r.deleteInternal(layer.ID)
 						if err != nil {
 							break
