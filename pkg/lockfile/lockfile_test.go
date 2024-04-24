@@ -10,10 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/containers/storage/pkg/reexec"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/containers/storage/pkg/reexec"
 )
 
 // Warning: this is not an exhaustive set of tests.
@@ -32,7 +33,7 @@ func subTouchMain() {
 	if len(os.Args) != 2 {
 		logrus.Fatalf("expected two args, got %d", len(os.Args))
 	}
-	tf, err := GetLockfile(os.Args[1])
+	tf, err := GetLockFile(os.Args[1])
 	if err != nil {
 		logrus.Fatalf("error opening lock file %q: %v", os.Args[1], err)
 	}
@@ -48,7 +49,7 @@ func subTouchMain() {
 // At that point, the child will have acquired the lock.  It can then signal
 // that the child should Touch() the lock by closing the WriteCloser.  The
 // second ReadCloser will be closed when the child has finished.
-func subTouch(l *namedLocker) (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
+func subTouch(l *namedLockFile) (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
 	cmd := reexec.Command("subTouch", l.name)
 	wc, err := cmd.StdinPipe()
 	if err != nil {
@@ -77,7 +78,7 @@ func subLockMain() {
 	if len(os.Args) != 2 {
 		logrus.Fatalf("expected two args, got %d", len(os.Args))
 	}
-	tf, err := GetLockfile(os.Args[1])
+	tf, err := GetLockFile(os.Args[1])
 	if err != nil {
 		logrus.Fatalf("error opening lock file %q: %v", os.Args[1], err)
 	}
@@ -91,7 +92,7 @@ func subLockMain() {
 // should wait for the first ReadCloser by reading it until it receives an EOF.
 // At that point, the child will have acquired the lock.  It can then signal
 // that the child should release the lock by closing the WriteCloser.
-func subLock(l *namedLocker) (io.WriteCloser, io.ReadCloser, error) {
+func subLock(l *namedLockFile) (io.WriteCloser, io.ReadCloser, error) {
 	cmd := reexec.Command("subLock", l.name)
 	wc, err := cmd.StdinPipe()
 	if err != nil {
@@ -130,7 +131,7 @@ func subRecursiveLockMain() {
 // caller should wait for the first ReadCloser by reading it until it receives
 // an EOF. At that point, the child will have acquired the lock.  It can then
 // signal that the child should release the lock by closing the WriteCloser.
-func subRecursiveLock(l *namedLocker) (io.WriteCloser, io.ReadCloser, error) {
+func subRecursiveLock(l *namedLockFile) (io.WriteCloser, io.ReadCloser, error) {
 	cmd := reexec.Command("subRecursiveLock", l.name)
 	wc, err := cmd.StdinPipe()
 	if err != nil {
@@ -155,7 +156,7 @@ func subRLockMain() {
 	if len(os.Args) != 2 {
 		logrus.Fatalf("expected two args, got %d", len(os.Args))
 	}
-	tf, err := GetLockfile(os.Args[1])
+	tf, err := GetLockFile(os.Args[1])
 	if err != nil {
 		logrus.Fatalf("error opening lock file %q: %v", os.Args[1], err)
 	}
@@ -169,7 +170,7 @@ func subRLockMain() {
 // should wait for the first ReadCloser by reading it until it receives an EOF.
 // At that point, the child will have acquired a read lock.  It can then signal
 // that the child should release the lock by closing the WriteCloser.
-func subRLock(l *namedLocker) (io.WriteCloser, io.ReadCloser, error) {
+func subRLock(l *namedLockFile) (io.WriteCloser, io.ReadCloser, error) {
 	cmd := reexec.Command("subRLock", l.name)
 	wc, err := cmd.StdinPipe()
 	if err != nil {
@@ -194,13 +195,13 @@ func init() {
 	reexec.Register("subLock", subLockMain)
 }
 
-type namedLocker struct {
+type namedLockFile struct {
 	Locker
 	name string
 }
 
-func getNamedLocker(ro bool) (*namedLocker, error) {
-	var l Locker
+func getNamedLockFile(ro bool) (*namedLockFile, error) {
+	var l *LockFile
 	tf, err := ioutil.TempFile("", "lockfile")
 	if err != nil {
 		return nil, err
@@ -208,22 +209,22 @@ func getNamedLocker(ro bool) (*namedLocker, error) {
 	name := tf.Name()
 	tf.Close()
 	if ro {
-		l, err = GetROLockfile(name)
+		l, err = GetROLockFile(name)
 	} else {
-		l, err = GetLockfile(name)
+		l, err = GetLockFile(name)
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &namedLocker{Locker: l, name: name}, nil
+	return &namedLockFile{Locker: l, name: name}, nil
 }
 
-func getTempLockfile() (*namedLocker, error) {
-	return getNamedLocker(false)
+func getTempLockfile() (*namedLockFile, error) {
+	return getNamedLockFile(false)
 }
 
-func getTempROLockfile() (*namedLocker, error) {
-	return getNamedLocker(true)
+func getTempROLockfile() (*namedLockFile, error) {
+	return getNamedLockFile(true)
 }
 
 func TestLockfileName(t *testing.T) {

@@ -8,13 +8,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/containers/storage/pkg/stringid"
-	"github.com/containers/storage/pkg/system"
 	"github.com/pkg/errors"
 	"golang.org/x/sys/unix"
+
+	"github.com/containers/storage/pkg/stringid"
+	"github.com/containers/storage/pkg/system"
 )
 
-type lockfile struct {
+// *LockFile represents a file lock where the file is used to cache an
+// identifier of the last party that made changes to whatever's being protected
+// by the lock.
+//
+// It MUST NOT be created manually. Use GetLockFile or GetROLockFile instead.
+type LockFile struct {
 	// rwMutex serializes concurrent reader-writer acquisitions in the same process space
 	rwMutex *sync.RWMutex
 	// stateMutex is used to synchronize concurrent accesses to the state below
@@ -40,20 +46,20 @@ func openLock(path string, ro bool) (int, error) {
 	return unix.Open(path, os.O_RDWR|os.O_CREATE, unix.S_IRUSR|unix.S_IWUSR)
 }
 
-// createLockerForPath returns a Locker object, possibly (depending on the platform)
+// createLockFileForPath returns new *LockFile object, possibly (depending on the platform)
 // working inter-process and associated with the specified path.
 //
 // This function will be called at most once for each path value within a single process.
 //
-// If ro, the lock is a read-write lock and the returned Locker should correspond to the
+// If ro, the lock is a read-write lock and the returned *LockFile should correspond to the
 // “lock for reading” (shared) operation; otherwise, the lock is either an exclusive lock,
-// or a read-write lock and Locker should correspond to the “lock for writing” (exclusive) operation.
+// or a read-write lock and *LockFile should correspond to the “lock for writing” (exclusive) operation.
 //
 // WARNING:
 // - The lock may or MAY NOT be inter-process.
 // - There may or MAY NOT be an actual object on the filesystem created for the specified path.
 // - Even if ro, the lock MAY be exclusive.
-func createLockerForPath(path string, ro bool) (Locker, error) {
+func createLockFileForPath(path string, ro bool) (*LockFile, error) {
 	// Check if we can open the lock.
 	fd, err := openLock(path, ro)
 	if err != nil {
@@ -65,7 +71,7 @@ func createLockerForPath(path string, ro bool) (Locker, error) {
 	if ro {
 		locktype = unix.F_RDLCK
 	}
-	return &lockfile{
+	return &LockFile{
 		stateMutex: &sync.Mutex{},
 		rwMutex:    &sync.RWMutex{},
 		file:       path,
@@ -77,7 +83,7 @@ func createLockerForPath(path string, ro bool) (Locker, error) {
 
 // lock locks the lockfile via FCTNL(2) based on the specified type and
 // command.
-func (l *lockfile) lock(lType int16, recursive bool) {
+func (l *LockFile) lock(lType int16, recursive bool) {
 	lk := unix.Flock_t{
 		Type:   lType,
 		Whence: int16(os.SEEK_SET),
@@ -123,7 +129,7 @@ func (l *lockfile) lock(lType int16, recursive bool) {
 }
 
 // Lock locks the lockfile as a writer.  Panic if the lock is a read-only one.
-func (l *lockfile) Lock() {
+func (l *LockFile) Lock() {
 	if l.ro {
 		panic("can't take write lock on read-only lock file")
 	} else {
@@ -134,7 +140,7 @@ func (l *lockfile) Lock() {
 // RecursiveLock locks the lockfile as a writer but allows for recursive
 // acquisitions within the same process space.  Note that RLock() will be called
 // if it's a lockTypReader lock.
-func (l *lockfile) RecursiveLock() {
+func (l *LockFile) RecursiveLock() {
 	if l.ro {
 		l.RLock()
 	} else {
@@ -143,12 +149,12 @@ func (l *lockfile) RecursiveLock() {
 }
 
 // LockRead locks the lockfile as a reader.
-func (l *lockfile) RLock() {
+func (l *LockFile) RLock() {
 	l.lock(unix.F_RDLCK, false)
 }
 
 // Unlock unlocks the lockfile.
-func (l *lockfile) Unlock() {
+func (l *LockFile) Unlock() {
 	l.stateMutex.Lock()
 	if l.locked == false {
 		// Panic when unlocking an unlocked lock.  That's a violation
@@ -180,13 +186,13 @@ func (l *lockfile) Unlock() {
 }
 
 // Locked checks if lockfile is locked for writing by a thread in this process.
-func (l *lockfile) Locked() bool {
+func (l *LockFile) Locked() bool {
 	l.stateMutex.Lock()
 	defer l.stateMutex.Unlock()
 	return l.locked && (l.locktype == unix.F_WRLCK)
 }
 
-func (l *lockfile) AssertLocked() {
+func (l *LockFile) AssertLocked() {
 	// DO NOT provide a variant that returns the value of l.locked.
 	//
 	// If the caller does not hold the lock, l.locked might nevertheless be true because another goroutine does hold it, and
@@ -203,7 +209,7 @@ func (l *lockfile) AssertLocked() {
 	}
 }
 
-func (l *lockfile) AssertLockedForWriting() {
+func (l *LockFile) AssertLockedForWriting() {
 	// DO NOT provide a variant that returns the current lock state.
 	//
 	// The same caveats as for AssertLocked apply equally.
@@ -215,8 +221,10 @@ func (l *lockfile) AssertLockedForWriting() {
 	}
 }
 
-// Touch updates the lock file with the UID of the user.
-func (l *lockfile) Touch() error {
+// Touch updates the lock file with to record that the current lock holder has modified the lock-protected data.
+//
+// Deprecated: Use *LockFile.RecordWrite.
+func (l *LockFile) Touch() error {
 	l.stateMutex.Lock()
 	if !l.locked || (l.locktype != unix.F_WRLCK) {
 		panic("attempted to update last-writer in lockfile without the write lock")
@@ -240,7 +248,9 @@ func (l *lockfile) Touch() error {
 
 // Modified indicates if the lockfile has been updated since the last time it
 // was loaded.
-func (l *lockfile) Modified() (bool, error) {
+//
+// Deprecated: Use *LockFile.ModifiedSince.
+func (l *LockFile) Modified() (bool, error) {
 	id := []byte(l.lw)
 	l.stateMutex.Lock()
 	if !l.locked {
@@ -264,12 +274,12 @@ func (l *lockfile) Modified() (bool, error) {
 }
 
 // IsReadWriteLock indicates if the lock file is a read-write lock.
-func (l *lockfile) IsReadWrite() bool {
+func (l *LockFile) IsReadWrite() bool {
 	return !l.ro
 }
 
 // TouchedSince indicates if the lock file has been touched since the specified time
-func (l *lockfile) TouchedSince(when time.Time) bool {
+func (l *LockFile) TouchedSince(when time.Time) bool {
 	st, err := system.Fstat(int(l.fd))
 	if err != nil {
 		return true
