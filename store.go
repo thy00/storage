@@ -2787,10 +2787,15 @@ func (s *store) Layers() ([]Layer, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := lstore.LoadLocked(); err != nil {
-		return nil, err
-	}
-	layers, err := lstore.Layers()
+	layers, err := func() ([]Layer, error) {
+
+		if err := lstore.startWriting(); err != nil {
+			return nil, err
+		}
+		defer lstore.stopWriting()
+
+		return lstore.Layers()
+	}()
 	if err != nil {
 		return nil, err
 	}
