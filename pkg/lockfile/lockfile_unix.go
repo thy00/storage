@@ -4,9 +4,12 @@ package lockfile
 
 import (
 	"bytes"
+	cryptorand "crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
