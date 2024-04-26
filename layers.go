@@ -17,7 +17,7 @@ import (
 
 	"github.com/klauspost/pgzip"
 	"github.com/opencontainers/go-digest"
-	"github.com/opencontainers/selinux/go-selinux/label"
+	"github.com/opencontainers/selinux/go-selinux"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/vbatts/tar-split/archive/tar"
@@ -441,39 +441,42 @@ func (r *layerStore) load(lockedForWriting bool) (bool, error) {
 		return false, err
 	}
 	layers := []*Layer{}
-	idlist := []string{}
+	if len(data) != 0 {
+		if err := json.Unmarshal(data, &layers); err != nil {
+			return false, fmt.Errorf("loading %q: %w", rpath, err)
+		}
+	}
+	idlist := make([]string, 0, len(layers))
 	ids := make(map[string]*Layer)
 	names := make(map[string]*Layer)
 	compressedsums := make(map[digest.Digest][]string)
 	uncompressedsums := make(map[digest.Digest][]string)
 	if r.lockfile.IsReadWrite() {
-		label.ClearLabels()
+		selinux.ClearLabels()
 	}
-	if err = json.Unmarshal(data, &layers); len(data) == 0 || err == nil {
-		idlist = make([]string, 0, len(layers))
-		for n, layer := range layers {
-			ids[layer.ID] = layers[n]
-			idlist = append(idlist, layer.ID)
-			for _, name := range layer.Names {
-				if conflict, ok := names[name]; ok {
-					r.removeName(conflict, name)
-					shouldSave = true
-				}
-				names[name] = layers[n]
+
+	for n, layer := range layers {
+		ids[layer.ID] = layers[n]
+		idlist = append(idlist, layer.ID)
+		for _, name := range layer.Names {
+			if conflict, ok := names[name]; ok {
+				r.removeName(conflict, name)
+				shouldSave = true
 			}
-			if layer.CompressedDigest != "" {
-				compressedsums[layer.CompressedDigest] = append(compressedsums[layer.CompressedDigest], layer.ID)
-			}
-			if layer.UncompressedDigest != "" {
-				uncompressedsums[layer.UncompressedDigest] = append(uncompressedsums[layer.UncompressedDigest], layer.ID)
-			}
-			if layer.MountLabel != "" {
-				label.ReserveLabel(layer.MountLabel)
-			}
-			layer.ReadOnly = !r.lockfile.IsReadWrite()
+			names[name] = layers[n]
 		}
-		err = nil
+		if layer.CompressedDigest != "" {
+			compressedsums[layer.CompressedDigest] = append(compressedsums[layer.CompressedDigest], layer.ID)
+		}
+		if layer.UncompressedDigest != "" {
+			uncompressedsums[layer.UncompressedDigest] = append(uncompressedsums[layer.UncompressedDigest], layer.ID)
+		}
+		if layer.MountLabel != "" {
+			selinux.ReserveLabel(layer.MountLabel)
+		}
+		layer.ReadOnly = !r.lockfile.IsReadWrite()
 	}
+
 	if shouldSave && (!r.lockfile.IsReadWrite() || !lockedForWriting) {
 		if !r.lockfile.IsReadWrite() {
 			return false, ErrDuplicateLayerNames
@@ -493,7 +496,7 @@ func (r *layerStore) load(lockedForWriting bool) (bool, error) {
 	if r.lockfile.IsReadWrite() {
 		r.mountsLockfile.RLock()
 		defer r.mountsLockfile.Unlock()
-		if err = r.loadMounts(); err != nil {
+		if err := r.loadMounts(); err != nil {
 			return false, err
 		}
 
@@ -789,7 +792,7 @@ func (r *layerStore) Put(id string, parentLayer *Layer, names []string, mountLab
 		parentMappings = &idtools.IDMappings{}
 	}
 	if mountLabel != "" {
-		label.ReserveLabel(mountLabel)
+		selinux.ReserveLabel(mountLabel)
 	}
 	idMappings := idtools.NewIDMappingsFromMaps(moreOptions.UIDMap, moreOptions.GIDMap)
 	opts := drivers.CreateOpts{
@@ -1163,7 +1166,7 @@ func (r *layerStore) deleteInternal(id string) error {
 				}
 			}
 			if !found {
-				label.ReleaseLabel(mountLabel)
+				selinux.ReleaseLabel(mountLabel)
 			}
 		}
 	}
