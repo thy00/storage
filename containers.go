@@ -89,22 +89,11 @@ type ContainerStore interface {
 	// stopReading releases locks obtained by startReading.
 	stopReading()
 
-	// Touch records, for others sharing the lock, that the caller was the
-	// last writer.  It should only be called with the lock held.
-	Touch() error
-
-	// Modified() checks if the most recent writer was a party other than the
-	// last recorded writer.  It should only be called with the lock held.
-	Modified() (bool, error)
-
 	// TouchedSince() checks if the most recent writer modified the file (likely using Touch()) after the specified time.
 	TouchedSince(when time.Time) bool
 
 	// IsReadWrite() checks if the lock file is read-write
 	IsReadWrite() bool
-
-	// Locked() checks if lock is locked for writing by a thread in this process
-	Locked() bool
 
 	// Save saves the contents of the store to disk.  It should be called with
 	// the lock held, and Touch() should be called afterward before releasing the
@@ -217,7 +206,7 @@ func (r *containerStore) startWritingWithReload(canReload bool) error {
 	}()
 
 	if canReload {
-		if err := r.ReloadIfChanged(); err != nil {
+		if err := r.reloadIfChanged(true); err != nil {
 			return err
 		}
 	}
@@ -248,7 +237,7 @@ func (r *containerStore) startReading() error {
 		}
 	}()
 
-	if err := r.ReloadIfChanged(); err != nil {
+	if err := r.reloadIfChanged(false); err != nil {
 		return err
 	}
 
@@ -261,14 +250,17 @@ func (r *containerStore) stopReading() {
 	r.lockfile.Unlock()
 }
 
-// ReloadIfChanged reloads the contents of the store from disk if it is changed.
-func (r *containerStore) ReloadIfChanged() error {
+// reloadIfChanged reloads the contents of the store from disk if it is changed.
+//
+// The caller must hold r.lockfile for reading _or_ writing; lockedForWriting is true
+// if it is held for writing.
+func (r *containerStore) reloadIfChanged(lockedForWriting bool) error {
 	r.loadMut.Lock()
 	defer r.loadMut.Unlock()
 
 	modified, err := r.lockfile.Modified()
 	if err == nil && modified {
-		return r.Load()
+		return r.load(lockedForWriting)
 	}
 	return err
 }
@@ -293,9 +285,11 @@ func (r *containerStore) datapath(id, key string) string {
 	return filepath.Join(r.datadir(id), makeBigDataBaseName(key))
 }
 
-// Load reloads the contents of the store from disk.  It should be called
-// with the lock held.
-func (r *containerStore) Load() error {
+// load reloads the contents of the store from disk.
+//
+// The caller must hold r.lockfile for reading _or_ writing; lockedForWriting is true
+// if it is held for writing.
+func (r *containerStore) load(lockedForWriting bool) error {
 	needSave := false
 	rpath := r.containerspath()
 	data, err := ioutil.ReadFile(rpath)
@@ -332,15 +326,18 @@ func (r *containerStore) Load() error {
 	r.bylayer = layers
 	r.byname = names
 	if needSave {
+		if !lockedForWriting {
+			// Eventually, the callers should be modified to retry with a write lock, instead.
+			return errors.New("container store is inconsistent and the current caller does not hold a write lock")
+		}
 		return r.Save()
 	}
 	return nil
 }
 
+// the lock held, locked for writing.
 func (r *containerStore) Save() error {
-	if !r.Locked() {
-		return errors.New("container store is not locked")
-	}
+	r.lockfile.AssertLockedForWriting()
 	rpath := r.containerspath()
 	if err := os.MkdirAll(filepath.Dir(rpath), 0700); err != nil {
 		return err
@@ -349,11 +346,10 @@ func (r *containerStore) Save() error {
 	if err != nil {
 		return err
 	}
-	defer r.Touch()
 	if err := ioutils.AtomicWriteFile(rpath, jdata, 0600); err != nil {
 		return err
 	}
-	return r.Touch()
+	return r.lockfile.Touch()
 }
 
 func newContainerStore(dir string) (ContainerStore, error) {
@@ -376,7 +372,7 @@ func newContainerStore(dir string) (ContainerStore, error) {
 		return nil, err
 	}
 	defer cstore.stopWriting()
-	if err := cstore.Load(); err != nil {
+	if err := cstore.load(true); err != nil {
 		return nil, err
 	}
 	return &cstore, nil
@@ -702,22 +698,10 @@ func (r *containerStore) RecursiveLock() {
 	r.lockfile.RecursiveLock()
 }
 
-func (r *containerStore) Touch() error {
-	return r.lockfile.Touch()
-}
-
-func (r *containerStore) Modified() (bool, error) {
-	return r.lockfile.Modified()
-}
-
 func (r *containerStore) IsReadWrite() bool {
 	return r.lockfile.IsReadWrite()
 }
 
 func (r *containerStore) TouchedSince(when time.Time) bool {
 	return r.lockfile.TouchedSince(when)
-}
-
-func (r *containerStore) Locked() bool {
-	return r.lockfile.Locked()
 }
