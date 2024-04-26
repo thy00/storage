@@ -105,12 +105,6 @@ type ContainerStore interface {
 
 	// Locked() checks if lock is locked for writing by a thread in this process
 	Locked() bool
-	// Load reloads the contents of the store from disk.  It should be called
-	// with the lock held.
-	Load() error
-
-	// ReloadIfChanged reloads the contents of the store from disk if it is changed.
-	ReloadIfChanged() error
 
 	// Save saves the contents of the store to disk.  It should be called with
 	// the lock held, and Touch() should be called afterward before releasing the
@@ -299,6 +293,8 @@ func (r *containerStore) datapath(id, key string) string {
 	return filepath.Join(r.datadir(id), makeBigDataBaseName(key))
 }
 
+// Load reloads the contents of the store from disk.  It should be called
+// with the lock held.
 func (r *containerStore) Load() error {
 	needSave := false
 	rpath := r.containerspath()
@@ -350,7 +346,10 @@ func (r *containerStore) Save() error {
 		return err
 	}
 	defer r.Touch()
-	return ioutils.AtomicWriteFile(rpath, jdata, 0600)
+	if err := ioutils.AtomicWriteFile(rpath, jdata, 0600); err != nil {
+		return err
+	}
+	return r.Touch()
 }
 
 func newContainerStore(dir string) (ContainerStore, error) {
