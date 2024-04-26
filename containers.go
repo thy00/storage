@@ -324,7 +324,6 @@ func (r *containerStore) datapath(id, key string) string {
 // If !lockedForWriting and this function fails, the return value indicates whether
 // retrying with lockedForWriting could succeed.
 func (r *containerStore) load(lockedForWriting bool) (bool, error) {
-	needSave := false
 	rpath := r.containerspath()
 	data, err := ioutil.ReadFile(rpath)
 	if err != nil && !os.IsNotExist(err) {
@@ -341,6 +340,7 @@ func (r *containerStore) load(lockedForWriting bool) (bool, error) {
 	layers := make(map[string]*Container)
 	ids := make(map[string]*Container)
 	names := make(map[string]*Container)
+	var errorToResolveBySaving error // == nil
 	for n, container := range containers {
 		idlist = append(idlist, container.ID)
 		ids[container.ID] = containers[n]
@@ -348,7 +348,7 @@ func (r *containerStore) load(lockedForWriting bool) (bool, error) {
 		for _, name := range container.Names {
 			if conflict, ok := names[name]; ok {
 				r.removeName(conflict, name)
-				needSave = true
+				errorToResolveBySaving = errors.New("container store is inconsistent and the current caller does not hold a write lock")
 			}
 			names[name] = containers[n]
 		}
@@ -359,10 +359,10 @@ func (r *containerStore) load(lockedForWriting bool) (bool, error) {
 	r.byid = ids
 	r.bylayer = layers
 	r.byname = names
-	if needSave {
+	if errorToResolveBySaving != nil {
 		if !lockedForWriting {
 			// Eventually, the callers should be modified to retry with a write lock, instead.
-			return true, errors.New("container store is inconsistent and the current caller does not hold a write lock")
+			return true, errorToResolveBySaving
 		}
 		return false, r.Save()
 	}

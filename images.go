@@ -392,7 +392,6 @@ func (i *Image) recomputeDigests() error {
 // If !lockedForWriting and this function fails, the return value indicates whether
 // retrying with lockedForWriting could succeed.
 func (r *imageStore) load(lockedForWriting bool) (bool, error) {
-	shouldSave := false
 	rpath := r.imagespath()
 	data, err := ioutil.ReadFile(rpath)
 	if err != nil && !os.IsNotExist(err) {
@@ -409,13 +408,14 @@ func (r *imageStore) load(lockedForWriting bool) (bool, error) {
 	ids := make(map[string]*Image)
 	names := make(map[string]*Image)
 	digests := make(map[digest.Digest][]*Image)
+	var errorToResolveBySaving error // == nil
 	for n, image := range images {
 		ids[image.ID] = images[n]
 		idlist = append(idlist, image.ID)
 		for _, name := range image.Names {
 			if conflict, ok := names[name]; ok {
 				r.removeName(conflict, name)
-				shouldSave = true
+				errorToResolveBySaving = ErrDuplicateImageNames
 			}
 		}
 		// Compute the digest list.
@@ -432,12 +432,12 @@ func (r *imageStore) load(lockedForWriting bool) (bool, error) {
 		image.ReadOnly = !r.lockfile.IsReadWrite()
 	}
 
-	if shouldSave && (!r.lockfile.IsReadWrite() || !lockedForWriting) {
+	if errorToResolveBySaving != nil && (!r.lockfile.IsReadWrite() || !lockedForWriting) {
 		if !r.lockfile.IsReadWrite() {
-			return false, ErrDuplicateImageNames
+			return false, errorToResolveBySaving
 		}
 		if !lockedForWriting {
-			return true, ErrDuplicateImageNames
+			return true, errorToResolveBySaving
 		}
 	}
 	r.images = images
@@ -445,7 +445,7 @@ func (r *imageStore) load(lockedForWriting bool) (bool, error) {
 	r.byid = ids
 	r.byname = names
 	r.bydigest = digests
-	if shouldSave {
+	if errorToResolveBySaving != nil {
 		return false, r.Save()
 	}
 	return false, nil

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hashicorp/go-multierror"
 	"github.com/klauspost/pgzip"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/selinux/go-selinux"
@@ -434,7 +435,6 @@ func (r *layerStore) layerspath() string {
 // If !lockedForWriting and this function fails, the return value indicates whether
 // retrying with lockedForWriting could succeed.
 func (r *layerStore) load(lockedForWriting bool) (bool, error) {
-	shouldSave := false
 	rpath := r.layerspath()
 	data, err := ioutil.ReadFile(rpath)
 	if err != nil && !os.IsNotExist(err) {
@@ -451,6 +451,8 @@ func (r *layerStore) load(lockedForWriting bool) (bool, error) {
 	names := make(map[string]*Layer)
 	compressedsums := make(map[digest.Digest][]string)
 	uncompressedsums := make(map[digest.Digest][]string)
+	var errorToResolveBySaving error // == nil; if there are multiple errors, this is one of them.
+
 	if r.lockfile.IsReadWrite() {
 		selinux.ClearLabels()
 	}
@@ -461,7 +463,7 @@ func (r *layerStore) load(lockedForWriting bool) (bool, error) {
 		for _, name := range layer.Names {
 			if conflict, ok := names[name]; ok {
 				r.removeName(conflict, name)
-				shouldSave = true
+				errorToResolveBySaving = ErrDuplicateLayerNames
 			}
 			names[name] = layers[n]
 		}
@@ -475,14 +477,21 @@ func (r *layerStore) load(lockedForWriting bool) (bool, error) {
 			selinux.ReserveLabel(layer.MountLabel)
 		}
 		layer.ReadOnly = !r.lockfile.IsReadWrite()
+		// The r.lockfile.IsReadWrite() condition maintains past practice:
+		// Incomplete layers in a read-only store are not treated as a reason to refuse to use other layers from that store
+		// (OTOH creating child layers on top would probably lead to problems?).
+		// We do remove incomplete layers in read-write stores so that we don’t build on top of them.
+		if layerHasIncompleteFlag(layer) && r.lockfile.IsReadWrite() {
+			errorToResolveBySaving = errors.New("an incomplete layer exists and can't be cleaned up")
+		}
 	}
 
-	if shouldSave && (!r.lockfile.IsReadWrite() || !lockedForWriting) {
+	if errorToResolveBySaving != nil {
 		if !r.lockfile.IsReadWrite() {
-			return false, ErrDuplicateLayerNames
+			return false, errorToResolveBySaving
 		}
 		if !lockedForWriting {
-			return true, ErrDuplicateLayerNames
+			return true, errorToResolveBySaving
 		}
 	}
 	r.layers = layers
@@ -499,29 +508,40 @@ func (r *layerStore) load(lockedForWriting bool) (bool, error) {
 		if err := r.loadMounts(); err != nil {
 			return false, err
 		}
+	}
 
+	if errorToResolveBySaving != nil {
+		if !r.lockfile.IsReadWrite() {
+			return false, fmt.Errorf("internal error: layerStore.load has shouldSave but !r.lockfile.IsReadWrite")
+		}
+
+		// Last step: try to remove anything that a previous
 		// Last step: as we’re writable, try to remove anything that a previous
 		// user of this storage area marked for deletion but didn't manage to
 		// actually delete.
-		if lockedForWriting {
-			for _, layer := range r.layers {
-				if layer.Flags == nil {
-					layer.Flags = make(map[string]interface{})
-				}
-				if cleanup, ok := layer.Flags[incompleteFlag]; ok {
-					if b, ok := cleanup.(bool); ok && b {
-						logrus.Warnf("Found incomplete layer %#v, deleting it", layer.ID)
-						err = r.deleteInternal(layer.ID)
-						if err != nil {
-							break
-						}
-						shouldSave = true
-					}
+		var incompleteDeletionErrors error // = nil
+
+		for _, layer := range r.layers {
+			if layer.Flags == nil {
+				layer.Flags = make(map[string]interface{})
+			}
+			if layerHasIncompleteFlag(layer) {
+				logrus.Warnf("Found incomplete layer %#v, deleting it", layer.ID)
+				err = r.deleteInternal(layer.ID)
+				if err != nil {
+					// Don't return the error immediately, because deleteInternal does not saveLayers();
+					// Even if deleting one incomplete layer fails, call saveLayers() so that other possible successfully
+					// deleted incomplete layers have their metadata correctly removed.
+					incompleteDeletionErrors = multierror.Append(incompleteDeletionErrors,
+						fmt.Errorf("deleting layer %#v: %w", layer.ID, err))
 				}
 			}
 		}
-		if shouldSave {
+		if err := r.saveLayers(); err != nil {
 			return false, err
+		}
+		if incompleteDeletionErrors != nil {
+			return false, incompleteDeletionErrors
 		}
 	}
 
@@ -1119,6 +1139,17 @@ func (r *layerStore) SetMetadata(id, metadata string) error {
 
 func (r *layerStore) tspath(id string) string {
 	return filepath.Join(r.layerdir, id+tarSplitSuffix)
+}
+
+// layerHasIncompleteFlag returns true if layer.Flags contains an incompleteFlag set to true
+func layerHasIncompleteFlag(layer *Layer) bool {
+	// layer.Flags[…] is defined to succeed and return ok == false if Flags == nil
+	if flagValue, ok := layer.Flags[incompleteFlag]; ok {
+		if b, ok := flagValue.(bool); ok && b {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *layerStore) deleteInternal(id string) error {
