@@ -228,9 +228,12 @@ func copyImageSlice(slice []*Image) []*Image {
 	return nil
 }
 
-// startWriting makes sure the store is fresh, and locks it for writing.
+// startWritingWithReload makes sure the store is fresh if canReload, and locks it for writing.
 // If this succeeds, the caller MUST call stopWriting().
-func (r *imageStore) startWriting() error {
+//
+// This is an internal implementation detail of imageStore construction, every other caller
+// should use startReading() instead.
+func (r *imageStore) startWritingWithReload(canReload bool) error {
 	r.lockfile.Lock()
 	succeeded := false
 	defer func() {
@@ -239,12 +242,20 @@ func (r *imageStore) startWriting() error {
 		}
 	}()
 
-	if err := r.ReloadIfChanged(); err != nil {
-		return err
+	if canReload {
+		if err := r.ReloadIfChanged(); err != nil {
+			return err
+		}
 	}
 
 	succeeded = true
 	return nil
+}
+
+// startWriting makes sure the store is fresh, and locks it for writing.
+// If this succeeds, the caller MUST call stopWriting().
+func (r *imageStore) startWriting() error {
+	return r.startWritingWithReload(false)
 }
 
 // stopWriting releases locks obtained by startWriting.
@@ -252,9 +263,12 @@ func (r *imageStore) stopWriting() {
 	r.lockfile.Unlock()
 }
 
-// startReading makes sure the store is fresh, and locks it for reading.
+// startReadingWithReload makes sure the store is fresh if canReload, and locks it for reading.
 // If this succeeds, the caller MUST call stopReading().
-func (r *imageStore) startReading() error {
+//
+// This is an internal implementation detail of imageStore construction, every other caller
+// should use startReading() instead.
+func (r *imageStore) startReadingWithReload(canReload bool) error {
 	r.lockfile.RLock()
 	succeeded := false
 	defer func() {
@@ -263,12 +277,20 @@ func (r *imageStore) startReading() error {
 		}
 	}()
 
-	if err := r.ReloadIfChanged(); err != nil {
-		return err
+	if canReload {
+		if err := r.ReloadIfChanged(); err != nil {
+			return err
+		}
 	}
 
 	succeeded = true
 	return nil
+}
+
+// startReading makes sure the store is fresh, and locks it for reading.
+// If this succeeds, the caller MUST call stopReading().
+func (r *imageStore) startReading() error {
+	return r.startReadingWithReload(true)
 }
 
 // stopReading releases locks obtained by startReading.
@@ -415,8 +437,6 @@ func newImageStore(dir string) (ImageStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	lockfile.Lock()
-	defer lockfile.Unlock()
 	istore := imageStore{
 		lockfile: lockfile,
 		dir:      dir,
@@ -425,6 +445,10 @@ func newImageStore(dir string) (ImageStore, error) {
 		byname:   make(map[string]*Image),
 		bydigest: make(map[digest.Digest][]*Image),
 	}
+	if err := istore.startWritingWithReload(false); err != nil {
+		return nil, err
+	}
+	defer istore.stopWriting()
 	if err := istore.Load(); err != nil {
 		return nil, err
 	}
@@ -436,8 +460,6 @@ func newROImageStore(dir string) (ROImageStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	lockfile.RLock()
-	defer lockfile.Unlock()
 	istore := imageStore{
 		lockfile: lockfile,
 		dir:      dir,
@@ -446,6 +468,10 @@ func newROImageStore(dir string) (ROImageStore, error) {
 		byname:   make(map[string]*Image),
 		bydigest: make(map[digest.Digest][]*Image),
 	}
+	if err := istore.startReadingWithReload(false); err != nil {
+		return nil, err
+	}
+	defer istore.stopReading()
 	if err := istore.Load(); err != nil {
 		return nil, err
 	}
@@ -843,20 +869,8 @@ func (r *imageStore) Wipe() error {
 	return nil
 }
 
-func (r *imageStore) Lock() {
-	r.lockfile.Lock()
-}
-
 func (r *imageStore) RecursiveLock() {
 	r.lockfile.RecursiveLock()
-}
-
-func (r *imageStore) RLock() {
-	r.lockfile.RLock()
-}
-
-func (r *imageStore) Unlock() {
-	r.lockfile.Unlock()
 }
 
 func (r *imageStore) Touch() error {
