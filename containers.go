@@ -208,9 +208,12 @@ func (c *Container) MountOpts() []string {
 	}
 }
 
-// startWriting makes sure the store is fresh, and locks it for writing.
+// startWritingWithReload makes sure the store is fresh if canReload, and locks it for writing.
 // If this succeeds, the caller MUST call stopWriting().
-func (r *containerStore) startWriting() error {
+//
+// This is an internal implementation detail of containerStore construction, every other caller
+// should use startWriting() instead.
+func (r *containerStore) startWritingWithReload(canReload bool) error {
 	r.lockfile.Lock()
 	succeeded := false
 	defer func() {
@@ -219,12 +222,20 @@ func (r *containerStore) startWriting() error {
 		}
 	}()
 
-	if err := r.ReloadIfChanged(); err != nil {
-		return err
+	if canReload {
+		if err := r.ReloadIfChanged(); err != nil {
+			return err
+		}
 	}
 
 	succeeded = true
 	return nil
+}
+
+// startWriting makes sure the store is fresh, and locks it for writing.
+// If this succeeds, the caller MUST call stopWriting().
+func (r *containerStore) startWriting() error {
+	return r.startWritingWithReload(true)
 }
 
 // stopWriting releases locks obtained by startWriting.
@@ -346,8 +357,10 @@ func newContainerStore(dir string) (ContainerStore, error) {
 		bylayer:    make(map[string]*Container),
 		byname:     make(map[string]*Container),
 	}
-	cstore.Lock()
-	defer cstore.Unlock()
+	if err := cstore.startWritingWithReload(false); err != nil {
+		return nil, err
+	}
+	defer cstore.stopWriting()
 	if err := cstore.Load(); err != nil {
 		return nil, err
 	}
@@ -670,16 +683,8 @@ func (r *containerStore) Wipe() error {
 	return nil
 }
 
-func (r *containerStore) Lock() {
-	r.lockfile.Lock()
-}
-
 func (r *containerStore) RecursiveLock() {
 	r.lockfile.RecursiveLock()
-}
-
-func (r *containerStore) Unlock() {
-	r.lockfile.Unlock()
 }
 
 func (r *containerStore) Touch() error {
