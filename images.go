@@ -298,6 +298,18 @@ func (r *imageStore) stopReading() {
 	r.lockfile.Unlock()
 }
 
+// ReloadIfChanged reloads the contents of the store from disk if it is changed.
+func (r *imageStore) ReloadIfChanged() error {
+	r.loadMut.Lock()
+	defer r.loadMut.Unlock()
+
+	modified, err := r.lockfile.Modified()
+	if err == nil && modified {
+		return r.Load()
+	}
+	return err
+}
+
 func (r *imageStore) Images() ([]Image, error) {
 	images := make([]Image, len(r.images))
 	for i := range r.images {
@@ -891,15 +903,4 @@ func (r *imageStore) TouchedSince(when time.Time) bool {
 
 func (r *imageStore) Locked() bool {
 	return r.lockfile.Locked()
-}
-
-func (r *imageStore) ReloadIfChanged() error {
-	r.loadMut.Lock()
-	defer r.loadMut.Unlock()
-
-	modified, err := r.Modified()
-	if err == nil && modified {
-		return r.Load()
-	}
-	return nil
 }
