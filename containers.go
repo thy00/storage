@@ -267,6 +267,18 @@ func (r *containerStore) stopReading() {
 	r.lockfile.Unlock()
 }
 
+// ReloadIfChanged reloads the contents of the store from disk if it is changed.
+func (r *containerStore) ReloadIfChanged() error {
+	r.loadMut.Lock()
+	defer r.loadMut.Unlock()
+
+	modified, err := r.lockfile.Modified()
+	if err == nil && modified {
+		return r.Load()
+	}
+	return err
+}
+
 func (r *containerStore) Containers() ([]Container, error) {
 	containers := make([]Container, len(r.containers))
 	for i := range r.containers {
@@ -705,15 +717,4 @@ func (r *containerStore) TouchedSince(when time.Time) bool {
 
 func (r *containerStore) Locked() bool {
 	return r.lockfile.Locked()
-}
-
-func (r *containerStore) ReloadIfChanged() error {
-	r.loadMut.Lock()
-	defer r.loadMut.Unlock()
-
-	modified, err := r.Modified()
-	if err == nil && modified {
-		return r.Load()
-	}
-	return nil
 }
