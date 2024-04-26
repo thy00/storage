@@ -75,17 +75,12 @@ type ContainerStore interface {
 	ContainerBigDataStore
 	FlaggableStore
 
-	// Acquire a writer lock.
-	// The default unix implementation panics if:
-	// - opening the lockfile failed
-	// - tried to lock a read-only lock-file
-	Lock()
+	// startWriting makes sure the store is fresh, and locks it for writing.
+	// If this succeeds, the caller MUST call stopWriting().
+	startWriting() error
 
-	// Unlock the lock.
-	// The default unix implementation panics if:
-	// - unlocking an unlocked lock
-	// - if the lock counter is corrupted
-	Unlock()
+	// stopWriting releases locks obtained by startWriting.
+	stopWriting()
 
 	// Acquire a reader lock.
 	RLock()
@@ -207,6 +202,30 @@ func (c *Container) MountOpts() []string {
 	default:
 		return nil
 	}
+}
+
+// startWriting makes sure the store is fresh, and locks it for writing.
+// If this succeeds, the caller MUST call stopWriting().
+func (r *containerStore) startWriting() error {
+	r.lockfile.Lock()
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			r.lockfile.Unlock()
+		}
+	}()
+
+	if err := r.ReloadIfChanged(); err != nil {
+		return err
+	}
+
+	succeeded = true
+	return nil
+}
+
+// stopWriting releases locks obtained by startWriting.
+func (r *containerStore) stopWriting() {
+	r.lockfile.Unlock()
 }
 
 func (r *containerStore) Containers() ([]Container, error) {

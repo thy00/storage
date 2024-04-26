@@ -972,11 +972,11 @@ func (s *store) PutLayer(id, parent string, names []string, mountLabel string, w
 	}
 	defer rlstore.stopWriting()
 
-	rcstore.Lock()
-	defer rcstore.Unlock()
-	if err := rcstore.ReloadIfChanged(); err != nil {
+	if err := rcstore.startWriting(); err != nil {
 		return nil, -1, err
 	}
+	defer rcstore.stopWriting()
+
 	if id == "" {
 		id = stringid.GenerateRandomID()
 	}
@@ -1393,11 +1393,11 @@ func (s *store) CreateContainer(id string, names []string, image, layer, metadat
 	if err != nil {
 		return nil, err
 	}
-	rcstore.Lock()
-	defer rcstore.Unlock()
-	if err := rcstore.ReloadIfChanged(); err != nil {
+	if err := rcstore.startWriting(); err != nil {
 		return nil, err
 	}
+	defer rcstore.stopWriting()
+
 	options.IDMappingOptions = IDMappingOptions{
 		HostUIDMapping: len(options.UIDMap) == 0,
 		HostGIDMapping: len(options.GIDMap) == 0,
@@ -1435,11 +1435,10 @@ func (s *store) SetMetadata(id, metadata string) error {
 	}
 	defer ristore.stopWriting()
 
-	rcstore.Lock()
-	defer rcstore.Unlock()
-	if err := rcstore.ReloadIfChanged(); err != nil {
+	if err := rcstore.startWriting(); err != nil {
 		return err
 	}
+	defer rcstore.stopWriting()
 
 	if rlstore.Exists(id) {
 		return rlstore.SetMetadata(id, metadata)
@@ -1497,11 +1496,12 @@ func (s *store) Metadata(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cstore.RLock()
-	defer cstore.Unlock()
-	if err := cstore.ReloadIfChanged(); err != nil {
+
+	if err := cstore.startWriting(); err != nil {
 		return "", err
 	}
+	defer cstore.stopWriting()
+
 	if cstore.Exists(id) {
 		return cstore.Metadata(id)
 	}
@@ -1767,11 +1767,11 @@ func (s *store) ContainerSize(id string) (int64, error) {
 	if err != nil {
 		return -1, err
 	}
-	rcstore.RLock()
-	defer rcstore.Unlock()
-	if err := rcstore.ReloadIfChanged(); err != nil {
+
+	if err := rcstore.startWriting(); err != nil {
 		return -1, err
 	}
+	defer rcstore.stopWriting()
 
 	// Read the container record.
 	container, err := rcstore.Get(id)
@@ -1882,11 +1882,11 @@ func (s *store) SetContainerBigData(id, key string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	rcstore.Lock()
-	defer rcstore.Unlock()
-	if err := rcstore.ReloadIfChanged(); err != nil {
+	if err := rcstore.startWriting(); err != nil {
 		return err
 	}
+	defer rcstore.stopWriting()
+
 	return rcstore.SetBigData(id, key, data)
 }
 
@@ -1991,11 +1991,12 @@ func (s *store) SetNames(id string, names []string) error {
 	if err != nil {
 		return err
 	}
-	rcstore.Lock()
-	defer rcstore.Unlock()
-	if err := rcstore.ReloadIfChanged(); err != nil {
+
+	if err := rcstore.startWriting(); err != nil {
 		return err
 	}
+	defer rcstore.stopWriting()
+
 	if rcstore.Exists(id) {
 		return rcstore.SetNames(id, deduped)
 	}
@@ -2137,11 +2138,10 @@ func (s *store) DeleteLayer(id string) error {
 	}
 	defer ristore.stopWriting()
 
-	rcstore.Lock()
-	defer rcstore.Unlock()
-	if err := rcstore.ReloadIfChanged(); err != nil {
+	if err := rcstore.startWriting(); err != nil {
 		return err
 	}
+	defer rcstore.stopWriting()
 
 	if rlstore.Exists(id) {
 		if l, err := rlstore.Get(id); err != nil {
@@ -2202,11 +2202,11 @@ func (s *store) DeleteImage(id string, commit bool) (layers []string, err error)
 	}
 	defer ristore.stopWriting()
 
-	rcstore.Lock()
-	defer rcstore.Unlock()
-	if err := rcstore.ReloadIfChanged(); err != nil {
+	if err := rcstore.startWriting(); err != nil {
 		return nil, err
 	}
+	defer rcstore.stopWriting()
+
 	layersToRemove := []string{}
 	if ristore.Exists(id) {
 		image, err := ristore.Get(id)
@@ -2332,11 +2332,10 @@ func (s *store) DeleteContainer(id string) error {
 	}
 	defer ristore.stopWriting()
 
-	rcstore.Lock()
-	defer rcstore.Unlock()
-	if err := rcstore.ReloadIfChanged(); err != nil {
+	if err := rcstore.startWriting(); err != nil {
 		return err
 	}
+	defer rcstore.stopWriting()
 
 	if rcstore.Exists(id) {
 		if container, err := rcstore.Get(id); err == nil {
@@ -2415,11 +2414,10 @@ func (s *store) Delete(id string) error {
 	}
 	defer ristore.stopWriting()
 
-	rcstore.Lock()
-	defer rcstore.Unlock()
-	if err := rcstore.ReloadIfChanged(); err != nil {
+	if err := rcstore.startWriting(); err != nil {
 		return err
 	}
+	defer rcstore.stopWriting()
 
 	if rcstore.Exists(id) {
 		if container, err := rcstore.Get(id); err == nil {
@@ -2475,12 +2473,10 @@ func (s *store) Wipe() error {
 		return err
 	}
 	defer ristore.stopWriting()
-
-	rcstore.Lock()
-	defer rcstore.Unlock()
-	if err := rcstore.ReloadIfChanged(); err != nil {
+	if err := rcstore.startWriting(); err != nil {
 		return err
 	}
+	defer rcstore.stopWriting()
 
 	if err = rcstore.Wipe(); err != nil {
 		return err
