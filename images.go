@@ -432,7 +432,7 @@ func (r *imageStore) load(lockedForWriting bool) (bool, error) {
 		image.ReadOnly = !r.lockfile.IsReadWrite()
 	}
 
-	if errorToResolveBySaving != nil && (!r.lockfile.IsReadWrite() || !lockedForWriting) {
+	if errorToResolveBySaving != nil {
 		if !r.lockfile.IsReadWrite() {
 			return false, errorToResolveBySaving
 		}
