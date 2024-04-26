@@ -1098,11 +1098,10 @@ func (s *store) CreateImage(id string, names []string, layer, metadata string, o
 	if err != nil {
 		return nil, err
 	}
-	ristore.Lock()
-	defer ristore.Unlock()
-	if err := ristore.ReloadIfChanged(); err != nil {
+	if err := ristore.startWriting(); err != nil {
 		return nil, err
 	}
+	defer ristore.stopWriting()
 
 	creationDate := time.Now().UTC()
 	if options != nil && !options.CreationDate.IsZero() {
@@ -1282,11 +1281,11 @@ func (s *store) CreateContainer(id string, names []string, image, layer, metadat
 		for _, s := range append([]ROImageStore{istore}, istores...) {
 			store := s
 			if store == istore {
-				store.Lock()
-				defer store.Unlock()
-				if err := store.ReloadIfChanged(); err != nil {
+				if err := store.startWriting(); err != nil {
 					return nil, err
 				}
+				defer store.stopWriting()
+
 			} else {
 				if err := store.startReading(); err != nil {
 					return nil, err
@@ -1431,11 +1430,11 @@ func (s *store) SetMetadata(id, metadata string) error {
 	}
 	defer rlstore.stopWriting()
 
-	ristore.Lock()
-	defer ristore.Unlock()
-	if err := ristore.ReloadIfChanged(); err != nil {
+	if err := ristore.startWriting(); err != nil {
 		return err
 	}
+	defer ristore.stopWriting()
+
 	rcstore.Lock()
 	defer rcstore.Unlock()
 	if err := rcstore.ReloadIfChanged(); err != nil {
@@ -1617,12 +1616,10 @@ func (s *store) SetImageBigData(id, key string, data []byte, digestManifest func
 	if err != nil {
 		return err
 	}
-
-	ristore.Lock()
-	defer ristore.Unlock()
-	if err := ristore.ReloadIfChanged(); err != nil {
+	if err := ristore.startWriting(); err != nil {
 		return err
 	}
+	defer ristore.stopWriting()
 
 	return ristore.SetBigData(id, key, data, digestManifest)
 }
@@ -1981,11 +1978,11 @@ func (s *store) SetNames(id string, names []string) error {
 	if err != nil {
 		return err
 	}
-	ristore.Lock()
-	defer ristore.Unlock()
-	if err := ristore.ReloadIfChanged(); err != nil {
+	if err := ristore.startWriting(); err != nil {
 		return err
 	}
+	defer ristore.stopWriting()
+
 	if ristore.Exists(id) {
 		return ristore.SetNames(id, deduped)
 	}
@@ -2135,11 +2132,11 @@ func (s *store) DeleteLayer(id string) error {
 		return err
 	}
 	defer rlstore.stopWriting()
-	ristore.Lock()
-	defer ristore.Unlock()
-	if err := ristore.ReloadIfChanged(); err != nil {
+	if err := ristore.startWriting(); err != nil {
 		return err
 	}
+	defer ristore.stopWriting()
+
 	rcstore.Lock()
 	defer rcstore.Unlock()
 	if err := rcstore.ReloadIfChanged(); err != nil {
@@ -2199,11 +2196,12 @@ func (s *store) DeleteImage(id string, commit bool) (layers []string, err error)
 		return nil, err
 	}
 	defer rlstore.stopWriting()
-	ristore.Lock()
-	defer ristore.Unlock()
-	if err := ristore.ReloadIfChanged(); err != nil {
+
+	if err := ristore.startWriting(); err != nil {
 		return nil, err
 	}
+	defer ristore.stopWriting()
+
 	rcstore.Lock()
 	defer rcstore.Unlock()
 	if err := rcstore.ReloadIfChanged(); err != nil {
@@ -2329,11 +2327,11 @@ func (s *store) DeleteContainer(id string) error {
 		return err
 	}
 	defer rlstore.stopWriting()
-	ristore.Lock()
-	defer ristore.Unlock()
-	if err := ristore.ReloadIfChanged(); err != nil {
+	if err := ristore.startWriting(); err != nil {
 		return err
 	}
+	defer ristore.stopWriting()
+
 	rcstore.Lock()
 	defer rcstore.Unlock()
 	if err := rcstore.ReloadIfChanged(); err != nil {
@@ -2412,11 +2410,11 @@ func (s *store) Delete(id string) error {
 		return err
 	}
 	defer rlstore.stopWriting()
-	ristore.Lock()
-	defer ristore.Unlock()
-	if err := ristore.ReloadIfChanged(); err != nil {
+	if err := ristore.startWriting(); err != nil {
 		return err
 	}
+	defer ristore.stopWriting()
+
 	rcstore.Lock()
 	defer rcstore.Unlock()
 	if err := rcstore.ReloadIfChanged(); err != nil {
@@ -2473,11 +2471,11 @@ func (s *store) Wipe() error {
 		return err
 	}
 	defer rlstore.stopWriting()
-	ristore.Lock()
-	defer ristore.Unlock()
-	if err := ristore.ReloadIfChanged(); err != nil {
+	if err := ristore.startWriting(); err != nil {
 		return err
 	}
+	defer ristore.stopWriting()
+
 	rcstore.Lock()
 	defer rcstore.Unlock()
 	if err := rcstore.ReloadIfChanged(); err != nil {

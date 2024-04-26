@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	digest "github.com/opencontainers/go-digest"
+	"github.com/opencontainers/go-digest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,10 +18,11 @@ func newTestImageStore(t *testing.T) ImageStore {
 }
 
 func addTestImage(t *testing.T, store ImageStore, id string, names []string) {
-	store.Lock()
-	defer store.Unlock()
+	err := store.startWriting()
+	require.NoError(t, err)
+	defer store.stopWriting()
 
-	_, err := store.Create(
+	_, err = store.Create(
 		id, []string{}, "", "", time.Now(), digest.FromString(""),
 	)
 
@@ -72,8 +73,8 @@ func TestHistoryNames(t *testing.T) {
 	require.Equal(t, secondImage.NamesHistory[1], "2")
 
 	// And When
-	store.Lock()
-	defer store.Unlock()
+	require.NoError(t, store.startWriting())
+	defer store.stopWriting()
 	require.Nil(t, store.SetNames(firstImageID, []string{"1", "2", "3", "4"}))
 
 	// Then
