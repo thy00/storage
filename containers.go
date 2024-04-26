@@ -82,8 +82,12 @@ type ContainerStore interface {
 	// stopWriting releases locks obtained by startWriting.
 	stopWriting()
 
-	// Acquire a reader lock.
-	RLock()
+	// startReading makes sure the store is fresh, and locks it for reading.
+	// If this succeeds, the caller MUST call stopReading().
+	startReading() error
+
+	// stopReading releases locks obtained by startReading.
+	stopReading()
 
 	// Touch records, for others sharing the lock, that the caller was the
 	// last writer.  It should only be called with the lock held.
@@ -225,6 +229,30 @@ func (r *containerStore) startWriting() error {
 
 // stopWriting releases locks obtained by startWriting.
 func (r *containerStore) stopWriting() {
+	r.lockfile.Unlock()
+}
+
+// startReading makes sure the store is fresh, and locks it for reading.
+// If this succeeds, the caller MUST call stopReading().
+func (r *containerStore) startReading() error {
+	r.lockfile.RLock()
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			r.lockfile.Unlock()
+		}
+	}()
+
+	if err := r.ReloadIfChanged(); err != nil {
+		return err
+	}
+
+	succeeded = true
+	return nil
+}
+
+// stopReading releases locks obtained by startReading.
+func (r *containerStore) stopReading() {
 	r.lockfile.Unlock()
 }
 
@@ -648,10 +676,6 @@ func (r *containerStore) Lock() {
 
 func (r *containerStore) RecursiveLock() {
 	r.lockfile.RecursiveLock()
-}
-
-func (r *containerStore) RLock() {
-	r.lockfile.RLock()
 }
 
 func (r *containerStore) Unlock() {
