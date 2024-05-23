@@ -2671,7 +2671,6 @@ func (s *store) Diff(from, to string, options *DiffOptions) (io.ReadCloser, erro
 		if err := store.startReading(); err != nil {
 			return nil, err
 		}
-		defer store.stopReading()
 
 		if store.Exists(to) {
 			rc, err := store.Diff(from, to, options)
